@@ -43,6 +43,55 @@ JOB_STATUS_URL = 'job_status'
 VERSIONS_URL = 'versions'
 
 
+def get_ml_backend_hostname() -> str:
+    """
+    [Smell 1 corrigido - Duplicated Code]
+    Antes esta expressao estava repetida em 3 metodos (train,
+    _prep_prediction_req, setup). Centralizada aqui = fonte unica de verdade.
+    """
+    return settings.HOSTNAME if settings.HOSTNAME else f'http://localhost:{settings.INTERNAL_PORT}'
+
+def create_project_uid(project) -> str:
+    """Gera o identificador unico do projeto usado nas requisicoes ao ML backend."""
+    time_id = int(project.created_at.timestamp())
+    return f'{project.id}.{time_id}'
+
+class MLRequestPayloadBuilder:
+    """
+    [Padrao Builder]
+    Monta de forma incremental os payloads enviados ao ML backend.
+    Resolve o Smell 2: antes cada metodo de MLApi montava seu proprio
+    dict repetindo chaves como 'project', 'label_config' e 'hostname'.
+    """
+
+    def __init__(self, ml_api: 'MLApi'):
+        self._ml_api = ml_api
+        self._payload = {}
+
+    def with_project(self, project) -> 'MLRequestPayloadBuilder':
+        self._payload['project'] = create_project_uid(project)
+        return self
+
+    def with_label_config(self, project) -> 'MLRequestPayloadBuilder':
+        self._payload['label_config'] = project.label_config
+        return self
+
+    def with_hostname(self) -> 'MLRequestPayloadBuilder':
+        self._payload['hostname'] = get_ml_backend_hostname()
+        return self
+
+    def with_params(self, **params) -> 'MLRequestPayloadBuilder':
+        self._payload['params'] = params
+        return self
+
+    def with_extra(self, **kwargs) -> 'MLRequestPayloadBuilder':
+        self._payload.update(kwargs)
+        return self
+
+    def build(self) -> dict:
+        return dict(self._payload)
+
+
 class BaseHTTPAPI(object):
     MAX_RETRIES = 2
     HEADERS = {
@@ -85,17 +134,21 @@ class BaseHTTPAPI(object):
             self._sessions[key] = session
             return session
 
-    def _prepare_kwargs(self, kwargs):
-        # add timeout if it's not presented
+    def _apply_timeout(self, kwargs):
+        """[Smell 3 corrigido - parte 1] Unica responsabilidade: resolver o timeout."""
         if 'timeout' not in kwargs:
             kwargs['timeout'] = self._connection_timeout, self._timeout
+        elif isinstance(kwargs['timeout'], (float, int)):
+            kwargs['timeout'] = (self._connection_timeout, kwargs['timeout'])
 
+    def _apply_auth(self, kwargs):
+        """[Smell 3 corrigido - parte 2] Unica responsabilidade: injetar auth basica."""
         if self._basic_auth[0] and self._basic_auth[1]:
             kwargs['auth'] = HTTPBasicAuth(*self._basic_auth)
 
-        # add connection timeout if it's not presented
-        elif isinstance(kwargs['timeout'], float) or isinstance(kwargs['timeout'], int):
-            kwargs['timeout'] = (self._connection_timeout, kwargs['timeout'])
+    def _prepare_kwargs(self, kwargs):
+        self._apply_auth(kwargs)
+        self._apply_timeout(kwargs)
 
     def request(self, method, *args, **kwargs):
         self._prepare_kwargs(kwargs)
@@ -132,12 +185,18 @@ class MLApiResult:
 
 class MLApi(BaseHTTPAPI):
     """
-    Class for ML API connector
+    [Padrao Facade]
+    Expoe uma interface simples (train, make_predictions, health, setup,
+    delete...) escondendo a complexidade de sessoes HTTP, retries e
+    timeouts (BaseHTTPAPI) e a montagem de payload (MLRequestPayloadBuilder).
     """
 
     def __init__(self, **kwargs):
         super(MLApi, self).__init__(**kwargs)
         self._validate_request_timeout = 10
+
+    def _payload_builder(self) -> MLRequestPayloadBuilder:
+        return MLRequestPayloadBuilder(self)
 
     def _get_url(self, url_suffix):
         url = self._url
@@ -177,10 +236,6 @@ class MLApi(BaseHTTPAPI):
 
         return MLApiResult(url=url, request=request, response=response, headers=headers, status_code=status_code)
 
-    def _create_project_uid(self, project):
-        time_id = int(project.created_at.timestamp())
-        return f'{project.id}.{time_id}'
-
     def train(self, project, use_ground_truth=False):
         # TODO Replace AnonymousUser with real user from request
         user = AnonymousUser()
@@ -191,35 +246,38 @@ class MLApi(BaseHTTPAPI):
                 'project': load_func(settings.WEBHOOK_SERIALIZERS['project'])(instance=project).data,
             }
             return self._request('webhook', request, verbose=False, timeout=TIMEOUT_PREDICT)
-        else:
-            # get only tasks with annotations
-            tasks = project.tasks.annotate(num_annotations=Count('annotations')).filter(num_annotations__gt=0)
-            # create serialized tasks with annotations: {"data": {...}, "annotations": [{...}], "predictions": [{...}]}
-            tasks_ser = ExportDataSerializer(tasks, many=True).data
-            logger.debug(f'{len(tasks_ser)} tasks with annotations are sent to ML backend for training.')
-            request = {
-                'annotations': tasks_ser,
-                'project': self._create_project_uid(project),
-                'label_config': project.label_config,
-                'hostname': settings.HOSTNAME if settings.HOSTNAME else ('http://localhost:' + settings.INTERNAL_PORT),
-                'params': {'login': project.task_data_login, 'password': project.task_data_password},
-            }
-            return self._request('train', request, verbose=False, timeout=TIMEOUT_PREDICT)
+
+        # get only tasks with annotations
+        tasks = project.tasks.annotate(num_annotations=Count('annotations')).filter(num_annotations__gt=0)
+        # create serialized tasks with annotations: {"data": {...}, "annotations": [{...}], "predictions": [{...}]}
+        tasks_ser = ExportDataSerializer(tasks, many=True).data
+        logger.debug(f'{len(tasks_ser)} tasks with annotations are sent to ML backend for training.')
+
+        request = (
+            self._payload_builder()
+            .with_extra(annotations=tasks_ser)
+            .with_project(project)
+            .with_label_config(project)
+            .with_hostname()
+            .with_params(login=project.task_data_login, password=project.task_data_password)
+            .build()
+        )
+        return self._request('train', request, verbose=False, timeout=TIMEOUT_PREDICT)
 
     def _prep_prediction_req(self, tasks, project, context=None):
-        request = {
-            'tasks': tasks,
-            'project': self._create_project_uid(project),
-            'label_config': project.label_config,
-            'params': {
-                'login': project.task_data_login,
-                'password': project.task_data_password,
-                'hostname': settings.HOSTNAME if settings.HOSTNAME else ('http://localhost:' + settings.INTERNAL_PORT),
-                'context': context,
-            },
-        }
-
-        return request
+        return (
+            self._payload_builder()
+            .with_extra(tasks=tasks)
+            .with_project(project)
+            .with_label_config(project)
+            .with_params(
+                login=project.task_data_login,
+                password=project.task_data_password,
+                hostname=get_ml_backend_hostname(),
+                context=context,
+            )
+            .build()
+        )
 
     def make_predictions(self, tasks, project, context=None):
         request = self._prep_prediction_req(tasks, project, context=context)
@@ -232,31 +290,32 @@ class MLApi(BaseHTTPAPI):
         return self._request(VALIDATE_URL, request={'config': config}, timeout=self._validate_request_timeout)
 
     def setup(self, project, extra_params=None, **kwargs):
-        return self._request(
-            SETUP_URL,
-            request={
-                'project': self._create_project_uid(project),
-                'schema': project.label_config,
-                'hostname': settings.HOSTNAME if settings.HOSTNAME else ('http://localhost:' + settings.INTERNAL_PORT),
-                'access_token': project.created_by.auth_token.key,
-                'extra_params': extra_params,
-            },
-            timeout=TIMEOUT_SETUP,
+        request = (
+            self._payload_builder()
+            .with_project(project)
+            .with_hostname()
+            .with_extra(
+                schema=project.label_config,
+                access_token=project.created_by.auth_token.key,
+                extra_params=extra_params,
+            )
+            .build()
         )
+        return self._request(SETUP_URL, request=request, timeout=TIMEOUT_SETUP)
 
     def duplicate_model(self, project_src, project_dst):
         return self._request(
             DUPLICATE_URL,
             request={
-                'project_src': self._create_project_uid(project_src),
-                'project_dst': self._create_project_uid(project_dst),
+                'project_src': create_project_uid(project_src),
+                'project_dst': create_project_uid(project_dst),
             },
             timeout=TIMEOUT_DUPLICATE_MODEL,
         )
 
     def delete(self, project):
         return self._request(
-            DELETE_URL, request={'project': self._create_project_uid(project)}, timeout=TIMEOUT_DELETE
+            DELETE_URL, request={'project': create_project_uid(project)}, timeout=TIMEOUT_DELETE
         )
 
     def get_train_job_status(self, train_job):
@@ -264,7 +323,7 @@ class MLApi(BaseHTTPAPI):
 
     def get_versions(self, project):
         return self._request(
-            VERSIONS_URL, request={'project': self._create_project_uid(project)}, timeout=TIMEOUT_SETUP, method='GET'
+            VERSIONS_URL, request={'project': create_project_uid(project)}, timeout=TIMEOUT_SETUP, method='GET'
         )
 
 
