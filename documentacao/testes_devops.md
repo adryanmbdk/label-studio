@@ -139,11 +139,15 @@ portanto não são endereçáveis neste trabalho.
 `github.event.pull_request.head.repo.fork == false` e depende de
 `secrets.CODECOV_TOKEN` — ou seja, é deliberadamente ignorado em forks.
 
-**Observação sobre checks vermelhos:** os validadores `Poetry Lock Change Size` e
-`PyProject Package Version` falham em todos os PRs deste fork porque utilizam
-`secrets.GIT_PAT`, um token do mantenedor. O GitHub não expõe secrets do
-repositório original em forks, por design de segurança — trata-se de uma
-limitação de ambiente, não de defeito nas contribuições.
+**Observação sobre checks vermelhos:** três checks falham em todos os PRs deste
+fork — `Poetry Lock Change Size`, `PyProject Package Version` e
+`CI/CD Pipeline / Changed files`. Todos usam `secrets.GIT_PAT`, um token do
+mantenedor, e o GitHub não expõe secrets do repositório original em forks, por
+design de segurança. O caso do `Changed files` é ilustrativo: seu passo
+`check-membership` chama `orgs.getMembershipForUser()` para verificar se o autor
+do PR pertence à organização proprietária — uma verificação que, em um fork
+pessoal, não tem como ser satisfeita. Trata-se de limitação de ambiente, não de
+defeito nas contribuições.
 
 ## Melhorias avaliadas e descartadas
 
