@@ -106,3 +106,90 @@ Em ambientes Linux/WSL, o Cypress pode exigir bibliotecas de sistema adicionais:
     Passing:  3
     Failing:  0
     Duration: ~16s
+
+---
+
+# DevOps e CI/CD
+
+## Análise do pipeline existente
+
+O Label Studio possui um pipeline maduro no GitHub Actions, com mais de 40 workflows.
+Os principais:
+
+| Workflow | Função |
+|---|---|
+| `tests.yml` | pytest em 4 versões de Python (3.10–3.13), SQLite + PostgreSQL + Windows |
+| `ruff.yml` | análise estática de Python |
+| `bandit.yml` | análise de segurança (Python) |
+| `codeql.yml` | análise de segurança (multi-linguagem) |
+| `gitleaks.yml` | detecção de segredos vazados |
+| `biome.yml` | lint e formatação de JS/TS |
+| `tests-yarn-lsf.yml` | testes Cypress do `libs/editor` |
+| `tests-yarn-unit.yml` | testes unitários do frontend |
+| `validator-pull-request-labeler.yml` | valida o título dos PRs (Conventional Commits) |
+
+**CD:** o projeto publica no PyPI (`build_pypi.yml`, `build_pypi_nightly.yml`),
+constrói e promove imagens Docker (`docker-build.yml`, `docker-release-promote.yml`)
+e atualiza o Helm chart (`bump-helm-chart.yml`). Esses fluxos dependem de
+credenciais de publicação do mantenedor (secrets indisponíveis em um fork),
+portanto não são endereçáveis neste trabalho.
+
+**Cobertura de código:** já existe via Codecov no `tests.yml`
+(`--cov=. --cov-report=xml`), porém o passo é condicionado a
+`github.event.pull_request.head.repo.fork == false` e depende de
+`secrets.CODECOV_TOKEN` — ou seja, é deliberadamente ignorado em forks.
+
+**Observação sobre checks vermelhos:** os validadores `Poetry Lock Change Size` e
+`PyProject Package Version` falham em todos os PRs deste fork porque utilizam
+`secrets.GIT_PAT`, um token do mantenedor. O GitHub não expõe secrets do
+repositório original em forks, por design de segurança — trata-se de uma
+limitação de ambiente, não de defeito nas contribuições.
+
+## Melhorias avaliadas e descartadas
+
+A análise do pipeline levou ao descarte de três propostas iniciais, por
+redundância — registradas aqui porque a justificativa do descarte faz parte
+da análise:
+
+1. **Adicionar pylint ao CI** — descartado: `ruff.yml` já executa análise
+   estática de Python, e o Ruff cobre o mesmo escopo com melhor desempenho.
+2. **Criar workflow para os testes de `label_studio/tests/ml/`** — descartado:
+   o `tests.yml` executa a suíte pytest inteira, sem filtro de path, portanto
+   os testes criados no Caminho B já são cobertos.
+3. **Adicionar cache de dependências** — descartado: `tests.yml` já usa
+   `cache: 'poetry'` e `tests-yarn-lsf.yml` já mantém cache do binário do Cypress.
+
+## Lacuna identificada
+
+Uma busca por `labelstudio-e2e` em todos os workflows retorna **zero ocorrências**:
+
+    grep -rn "labelstudio-e2e\|ls:e2e\|test:e2e\|cypress" .github/workflows/
+
+O Cypress presente no `tests-yarn-lsf.yml` pertence ao `libs/editor` — um
+aplicativo distinto dentro do monorepo.
+
+Conclusão: o projeto `labelstudio-e2e` estava configurado no monorepo, **sem
+nenhum teste implementado** e **sem execução no CI**. A primeira lacuna foi
+tratada com os testes descritos na primeira parte deste documento; a segunda é
+tratada pela melhoria abaixo.
+
+## Melhoria implementada
+
+Novo workflow: `.github/workflows/e2e-labelstudio.yml`
+
+Disparado em `pull_request` para `develop`, o job:
+
+1. instala as dependências Python (Poetry) e Node (Yarn), com cache — seguindo o
+   padrão já adotado pelos demais workflows do projeto;
+2. instala as dependências de sistema exigidas pelo Label Studio;
+3. gera o arquivo de versão e executa as migrações (SQLite);
+4. sobe o servidor em `localhost:8080` em background e aguarda a resposta via `wait-on`;
+5. executa `nx run labelstudio-e2e:e2e`;
+6. em caso de falha, publica screenshots e vídeos do Cypress como artefato do job.
+
+**Decisão de escopo:** os cenários exercitam apenas `/user/signup/` e `/user/login/`,
+servidos por templates Django — não exigem o build do frontend React. Isso mantém o
+job significativamente mais enxuto do que seria um e2e da interface completa.
+
+**Resultado:** o check `E2E — labelstudio-e2e (Cypress)` executa e passa nos Pull
+Requests abertos contra `develop`.
