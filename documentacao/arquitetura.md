@@ -10,6 +10,18 @@ Internamente, segue o padrão **cliente-servidor**: frontend React + backend Dja
 
 ---
 
+## Justificativa da Arquitetura
+
+A separação *cliente-servidor* responde a duas naturezas de problema muito diferentes. A anotação de dados é uma tarefa intensamente interativa — canvas, atalhos de teclado, feedback imediato, manipulação de mídia — que exige um cliente rico; já controle de acesso, persistência, importação/exportação e integridade dos dados são responsabilidades de servidor. Acoplar as duas em templates renderizados no servidor tornaria o editor inviável; separá-las permite que cada lado evolua no seu próprio ritmo.
+
+A *API REST* como único contrato entre as partes é o que permite que o mesmo backend atenda simultaneamente à interface web, ao SDK Python e aos backends de ML externos, sem código duplicado por cliente.
+
+No backend, a organização em *apps Django por domínio* (`projects`, `tasks`, `ml`, `data_export`...), cada um com seus próprios `models.py`, `api.py` e `serializers.py`, aplica o princípio de Separation of Concerns no nível de módulo. O ganho prático é o isolamento de mudanças: a refatoração realizada no Caminho B deste trabalho ficou inteiramente contida em `labels_manager/serializers.py`, sem exigir alteração em nenhum outro módulo — o que só é possível porque as fronteiras entre os domínios são explícitas.
+
+O *trade-off* dessa escolha é o custo de operação: são dois ecossistemas de build (Poetry e Nx/Yarn), dois pipelines de teste e maior complexidade de setup local do que teria um monólito Django tradicional. Para um projeto do porte do Label Studio — múltiplos tipos de mídia, editor reutilizável como biblioteca, integrações externas plugáveis — o custo se justifica; para uma aplicação CRUD simples, não se justificaria.
+
+---
+
 ## Diagrama de Componentes
 
 ```mermaid
