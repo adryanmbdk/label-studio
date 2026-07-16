@@ -1,3 +1,14 @@
+> ## Trabalho prático — CSI410 (Engenharia de Software II · UFOP)
+>
+> Este fork contém as contribuições da disciplina CSI410, documentadas em [`/documentacao`](./documentacao):
+>
+> - [`arquitetura.md`](./documentacao/arquitetura.md) — arquitetura do sistema e diagramas (Mermaid)
+> - [`padroes_e_smells.md`](./documentacao/padroes_e_smells.md) — code smells, padrões de projeto e métricas de qualidade
+> - [`testes_devops.md`](./documentacao/testes_devops.md) — testes de aceitação (Cypress), análise do pipeline e melhoria de CI
+> - [`contribuicoes.md`](./documentacao/contribuicoes.md) — issue resolvida, refatoração, lista de PRs e papéis
+>
+> Integrantes: Mateus Serretti Mendes Peixoto · Adryan Martins Batista dos Santos
+
 <img src="https://user-images.githubusercontent.com/12534576/192582340-4c9e4401-1fe6-4dbb-95bb-fdbba5493f61.png"/>
 
 ![GitHub](https://img.shields.io/github/license/heartexlabs/label-studio?logo=heartex) ![label-studio:build](https://github.com/HumanSignal/label-studio/workflows/label-studio:build/badge.svg) ![GitHub release](https://img.shields.io/github/v/release/heartexlabs/label-studio?include_prereleases)
